@@ -1,0 +1,18 @@
+[package]
+name = "mhgu-attack-damage-display"
+version = "0.3.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+mhgu-forge = { path = "../forge-rs-master/forge", default-features = false, features = ["imgui", "mt"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
