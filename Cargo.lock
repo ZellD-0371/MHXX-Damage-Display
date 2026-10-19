@@ -38,14 +38,15 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mhgu-attack-damage-display"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "mhgu-forge",
 ]
 
 [[package]]
 name = "mhgu-forge"
-version = "1.4.1"
+version = "1.5.0"
+source = "git+https://github.com/Lawrence-al/forge-rs.git?rev=f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220#f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220"
 dependencies = [
  "log",
  "mhgu-forge-macros",
@@ -55,7 +56,8 @@ dependencies = [
 
 [[package]]
 name = "mhgu-forge-macros"
-version = "1.4.1"
+version = "1.5.0"
+source = "git+https://github.com/Lawrence-al/forge-rs.git?rev=f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220#f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -65,14 +67,16 @@ dependencies = [
 
 [[package]]
 name = "mhgu-forge-rt"
-version = "1.4.1"
+version = "1.5.0"
+source = "git+https://github.com/Lawrence-al/forge-rs.git?rev=f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220#f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220"
 dependencies = [
  "mhgu-forge-sys",
 ]
 
 [[package]]
 name = "mhgu-forge-sys"
-version = "1.4.1"
+version = "1.5.0"
+source = "git+https://github.com/Lawrence-al/forge-rs.git?rev=f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220#f2af0622a2a0aa291ffbd3d2f7628c0e2d96d220"
 
 [[package]]
 name = "proc-macro-crate"

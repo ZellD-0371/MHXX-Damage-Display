@@ -1,0 +1,23 @@
+# 文本统一使用 LF，避免 Bash 脚本在 Windows 换行下无法运行。
+* text=auto
+.gitignore text eol=lf
+.gitattributes text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.json text eol=lf
+*.ini text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.ld text eol=lf
+*.sh text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.py text eol=lf
+*.ps1 text eol=lf
+
+# 字体和资源按二进制保存，不做换行转换。
+*.ttf binary
+*.otf binary
+*.bin binary
+*.4E2EF008 binary

@@ -1,5 +1,5 @@
 [build]
-target = "../sample-plugin/armv7a-none-eabi.json"
+target = "armv7a-none-eabi.json"
 
 [unstable]
 build-std = ["core", "alloc"]
@@ -9,6 +9,6 @@ json-target-spec = true
 # NRO 链接参数直接放在 Cargo 配置中，源码只保留 data.rs 与 lib.rs。
 [target.armv7a-none-eabi]
 rustflags = [
-    "-C", "link-arg=-T../sample-plugin/link/switch32.ld",
+    "-C", "link-arg=-Tlink/switch32.ld",
     "-C", "link-arg=-Wl,--build-id=sha1",
 ]

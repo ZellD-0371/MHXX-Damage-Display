@@ -12,7 +12,6 @@ use core::{
 // 事件不持有游戏指针；只保留命中点、数字、颜色和用于清理的玩家/区域编号。
 pub const CAPACITY: usize = 64;
 
-pub const CONFIG_PATH: &CStr = c"app:/nativeNX/plugins/attack_damage_display.ini";
 pub const CONFIG_MAX_BYTES: usize = 4096;
 
 // 外观配置和解析留在数据文件，不增加第三个 Rust 文件或 INI 依赖。
@@ -21,9 +20,9 @@ pub struct Config {
     pub enabled: bool,
     pub font_size: f32,
     pub font_file: Option<FontFile>,
-    pub highlight_color: [u8; 3],
-    pub normal_color: [u8; 3],
-    pub outline_color: [u8; 3],
+    pub highlight_color: [u8; 4],
+    pub normal_color: [u8; 4],
+    pub outline_color: [u8; 4],
     pub outline_width: f32,
     pub full_opacity: f32,
     pub lifetime: f32,
@@ -33,12 +32,12 @@ pub struct Config {
 pub struct FontFile([u8; 192]);
 
 impl FontFile {
-    fn new(filename: &str) -> Option<Self> {
+    pub fn new(filename: &str) -> Option<Self> {
         let prefix = b"app:/nativeNX/forge/fonts/";
         if !filename.ends_with(".ttf")
             || filename
                 .bytes()
-                .any(|c| c.is_ascii_control() || b"/\\:".contains(&c))
+                .any(|c| c.is_ascii_control() || b"/\\:;#".contains(&c))
             || prefix.len() + filename.len() >= 192
         {
             return None;
@@ -53,6 +52,14 @@ impl FontFile {
         // 构造时排除了内嵌 NUL，并保留至少一个末尾 NUL。
         CStr::from_bytes_until_nul(&self.0).unwrap()
     }
+
+    pub fn filename(&self) -> &str {
+        self.path()
+            .to_str()
+            .unwrap()
+            .strip_prefix("app:/nativeNX/forge/fonts/")
+            .unwrap()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -62,13 +69,37 @@ pub struct ConfigError {
 }
 
 impl Config {
+    pub fn write_ini(&self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
+        writeln!(
+            out,
+            "; MHGU save: /attack_damage_display.ini\n[display]\nenabled = {}\nfont_size = {}\nfont_file = {}",
+            self.enabled,
+            self.font_size,
+            self.font_file
+                .as_ref()
+                .map_or("default", FontFile::filename)
+        )?;
+        for (key, [r, g, b, a]) in [
+            ("highlight_color", self.highlight_color),
+            ("normal_color", self.normal_color),
+            ("outline_color", self.outline_color),
+        ] {
+            writeln!(out, "{key} = #{r:02X}{g:02X}{b:02X}{a:02X}")?;
+        }
+        writeln!(
+            out,
+            "outline_width = {}\nfull_opacity = {}\nlifetime = {}",
+            self.outline_width, self.full_opacity, self.lifetime
+        )
+    }
+
     pub const DEFAULT: Self = Self {
         enabled: true,
         font_size: 34.0,
         font_file: None,
-        highlight_color: [255, 220, 80],
-        normal_color: [255, 255, 255],
-        outline_color: [10, 10, 10],
+        highlight_color: [255, 220, 80, 255],
+        normal_color: [255, 255, 255, 255],
+        outline_color: [10, 10, 10, 255],
         outline_width: 2.0,
         full_opacity: 1.10,
         lifetime: 1.40,
@@ -79,12 +110,12 @@ impl Config {
         let mut display = false;
         let mut timing_line = 0;
         for (index, line) in text.trim_start_matches('\u{FEFF}').lines().enumerate() {
-            let line = line.split([';', '#']).next().unwrap().trim();
+            let line = line.split(';').next().unwrap().trim();
             let error = |message| ConfigError {
                 line: index + 1,
                 message,
             };
-            if line.is_empty() {
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             if line == "[display]" {
@@ -97,7 +128,11 @@ impl Config {
             let (key, value) = line
                 .split_once('=')
                 .ok_or_else(|| error("expected key = value"))?;
-            let value = value.trim();
+            let value = if value.trim_start().starts_with('#') {
+                value.split_ascii_whitespace().next().unwrap()
+            } else {
+                value.split('#').next().unwrap().trim()
+            };
             let number = |min: f32, max: f32, message| {
                 value
                     .parse::<f32>()
@@ -105,9 +140,8 @@ impl Config {
                     .filter(|v| v.is_finite() && (min..=max).contains(v))
                     .ok_or_else(|| error(message))
             };
-            let color = || {
-                parse_color(value).ok_or_else(|| error("color requires three RGB values in 0..255"))
-            };
+            let color =
+                || parse_color(value).ok_or_else(|| error("color must be #RRGGBB or #RRGGBBAA"));
             match key.trim() {
                 "enabled" => {
                     config.enabled = value
@@ -153,18 +187,25 @@ impl Config {
     }
 }
 
-fn parse_color(value: &str) -> Option<[u8; 3]> {
-    let mut parts = value.split(',');
-    let rgb = [
-        parts.next()?.trim().parse().ok()?,
-        parts.next()?.trim().parse().ok()?,
-        parts.next()?.trim().parse().ok()?,
-    ];
-    if parts.next().is_some() {
-        None
-    } else {
-        Some(rgb)
+fn parse_color(value: &str) -> Option<[u8; 4]> {
+    if let Some(hex) = value.strip_prefix('#') {
+        if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let mut rgba = [0, 0, 0, 255];
+        for (i, out) in rgba.iter_mut().take(hex.len() / 2).enumerate() {
+            *out = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+        }
+        return Some(rgba);
     }
+    let mut parts = value.split(',');
+    let rgba = [
+        parts.next()?.trim().parse().ok()?,
+        parts.next()?.trim().parse().ok()?,
+        parts.next()?.trim().parse().ok()?,
+        parts.next().map_or(Some(255), |v| v.trim().parse().ok())?,
+    ];
+    parts.next().is_none().then_some(rgba)
 }
 
 // 对应原结算的物理肉质分支；weights 已按本次攻击选好斩/打权重。
@@ -258,9 +299,32 @@ impl Event {
 }
 
 #[derive(Clone, Copy)]
+pub struct DisplayArea {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl DisplayArea {
+    // 游戏 NVN Window 的可见裁剪范围从 (0, 0) 开始，未投影时没有可见数字。
+    const INITIAL: Self = Self {
+        width: 1280.0,
+        height: 720.0,
+    };
+
+    pub fn position(self, screen: [f32; 2]) -> [f32; 2] {
+        [screen[0] * self.width, screen[1] * self.height]
+    }
+
+    pub fn scale(self) -> f32 {
+        self.height / 720.0
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct Snapshot {
     pub config: Config,
     pub epoch: Epoch,
+    pub display: DisplayArea,
     pub events: [Event; CAPACITY],
 }
 
@@ -273,6 +337,7 @@ impl Snapshot {
 pub struct State {
     pub config: Config,
     epoch: Epoch,
+    display: DisplayArea,
     events: [Event; CAPACITY],
     next: usize,
     serial: u32,
@@ -283,6 +348,7 @@ impl State {
         Self {
             config: Config::DEFAULT,
             epoch: Epoch { player: 0, room: 0 },
+            display: DisplayArea::INITIAL,
             events: [Event::EMPTY; CAPACITY],
             next: 0,
             serial: 0,
@@ -327,6 +393,7 @@ impl State {
         Snapshot {
             config: self.config,
             epoch: self.epoch,
+            display: self.display,
             events: self.events,
         }
     }
@@ -347,6 +414,7 @@ impl State {
         if self.epoch != projected.epoch {
             return;
         }
+        self.display = projected.display;
         for (current, sample) in self.events.iter_mut().zip(projected.events.iter()) {
             // 投影期间新命中可以覆盖槽位，不能把旧坐标写给新数字。
             if current.active && current.serial == sample.serial {
@@ -475,6 +543,20 @@ pub(crate) static mut DAMAGE_ORIGINAL: u32 = 0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hex_rgba_and_legacy_colors_preserve_alpha_on_save() {
+        let config = Config::parse("# comment\n[display]\nnormal_color = #12aBcD80 ; comment\nhighlight_color = #FFDC50\noutline_color = 1,2,3,4 # old format\n").unwrap();
+        assert_eq!(config.normal_color, [0x12, 0xAB, 0xCD, 0x80]);
+        assert_eq!(config.highlight_color, [255, 220, 80, 255]);
+        assert_eq!(config.outline_color, [1, 2, 3, 4]);
+        let mut text = std::string::String::new();
+        config.write_ini(&mut text).unwrap();
+        assert!(text.contains("normal_color = #12ABCD80"));
+        assert_eq!(Config::parse(&text).unwrap(), config);
+        for color in ["#12345", "#1234567", "#123456789", "#12GG5680", "#中文"] {
+            assert!(Config::parse(&std::format!("[display]\nnormal_color={color}")).is_err());
+        }
+    }
     const QUEST: Epoch = Epoch {
         player: 0x12340000,
         room: 3,
@@ -626,7 +708,7 @@ mod tests {
 
     #[test]
     fn shipped_ini_matches_defaults() {
-        let text = include_str!("../attack_damage_display.ini");
+        let text = include_str!("../conf/attack_damage_display.ini");
         assert!(text.len() <= CONFIG_MAX_BYTES);
         assert_eq!(Config::parse(text).unwrap(), Config::DEFAULT);
     }
@@ -645,9 +727,9 @@ mod tests {
         .unwrap();
         assert!(!config.enabled);
         assert_eq!(config.font_size, 42.0);
-        assert_eq!(config.highlight_color, [80, 255, 120]);
-        assert_eq!(config.normal_color, [230, 240, 255]);
-        assert_eq!(config.outline_color, [0, 0, 0]);
+        assert_eq!(config.highlight_color, [80, 255, 120, 255]);
+        assert_eq!(config.normal_color, [230, 240, 255, 255]);
+        assert_eq!(config.outline_color, [0, 0, 0, 255]);
         assert_eq!(config.outline_width, 0.0);
         assert_eq!(config.full_opacity, 1.5);
         assert_eq!(config.lifetime, 2.0);
@@ -692,7 +774,7 @@ mod tests {
             "normal_color = 0, 0, 256",
             "normal_color = -1, 0, 0",
             "normal_color = 0, 0",
-            "normal_color = 0, 0, 0, 0",
+            "normal_color = 0, 0, 0, 0, 0",
             "normal_color = red",
         ] {
             assert!(
@@ -702,7 +784,7 @@ mod tests {
         }
         let config =
             Config::parse("[display]\nnormal_color = 0, 128, 255\nfont_size = 128\n").unwrap();
-        assert_eq!(config.normal_color, [0, 128, 255]);
+        assert_eq!(config.normal_color, [0, 128, 255, 255]);
         assert_eq!(config.font_size, 128.0);
     }
 
@@ -762,6 +844,66 @@ mod tests {
             assert_eq!(normalized_screen(projected, 1280.0, 720.0), None);
         }
         assert_eq!(normalized_screen([0.0, 0.0, 1.0, 1.0], 0.0, 720.0), None);
+    }
+
+    #[test]
+    fn handheld_numbers_use_the_720p_crop_inside_a_1080p_texture() {
+        let area = DisplayArea {
+            width: 1280.0,
+            height: 720.0,
+        };
+        // 游戏视口可以是逻辑 720p 或物理 1080p；显示范围都应取当前裁剪。
+        for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0)] {
+            let center =
+                normalized_screen([width / 2.0, height / 2.0, 100.0, 1.0], width, height).unwrap();
+            assert_eq!(area.position(center), [640.0, 360.0]);
+            let lower_right =
+                normalized_screen([width * 0.9375, height * 0.9375, 100.0, 1.0], width, height)
+                    .unwrap();
+            assert_eq!(area.position(lower_right), [1200.0, 675.0]);
+        }
+        assert_eq!(Config::DEFAULT.font_size * area.scale(), 34.0);
+        assert_eq!(Config::DEFAULT.outline_width * area.scale(), 2.0);
+    }
+
+    #[test]
+    fn docked_numbers_keep_the_full_1080p_area_and_size() {
+        let area = DisplayArea {
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let screen = normalized_screen([960.0, 540.0, 100.0, 1.0], 1280.0, 720.0).unwrap();
+        assert_eq!(area.position(screen), [1440.0, 810.0]);
+        assert_eq!(area.position([0.5, 0.5]), [960.0, 540.0]);
+        assert_eq!(Config::DEFAULT.font_size * area.scale(), 51.0);
+        assert_eq!(Config::DEFAULT.outline_width * area.scale(), 3.0);
+    }
+
+    #[test]
+    fn mode_changes_remap_existing_numbers_without_resetting_events() {
+        let mut state = State::new();
+        state.push(QUEST, [10.0, 20.0, 30.0], 42, true);
+        state.advance(0.5);
+        let serial = state.snapshot().events[0].serial;
+        for (width, height, expected) in [
+            (1280.0, 720.0, [640.0, 360.0]),
+            (1920.0, 1080.0, [960.0, 540.0]),
+            (1280.0, 720.0, [640.0, 360.0]),
+        ] {
+            let mut projected = state.snapshot();
+            projected.display = DisplayArea { width, height };
+            projected.events[0].screen = [0.5, 0.5];
+            projected.events[0].visible = true;
+            state.commit_projection(&projected);
+            let frame = state.snapshot();
+            let event = frame.events[0];
+            assert_eq!(frame.display.position(event.screen), expected);
+            assert_eq!(event.serial, serial);
+            assert_eq!(event.age, 0.5);
+            assert_eq!(event.world, [10.0, 20.0, 30.0]);
+            assert_eq!(event.digits.as_str(), "42");
+            assert!(event.yellow && event.active && event.visible);
+        }
     }
 
     #[test]

@@ -2,6 +2,8 @@
 #![no_std]
 
 mod data;
+#[path = "../shared/plugin_config.rs"]
+mod plugin_config;
 
 use core::{
     arch::asm,
@@ -14,16 +16,15 @@ use data::*;
 use forge::{
     imgui,
     log::prelude::{error, info, warn},
-    mt::{
-        fs::{MtFile, OpenMode},
-        object::Object,
-    },
-    sys::imgui::ImVec2,
+    sys::imgui::{ImGuiInputTextFlags, ImVec2},
 };
 
 // Forge 入口、更新和绘图。
 // 字体仅在 ImGui 初始化时写入，随后由同一渲染线程读取。
 static mut CUSTOM_FONT: Option<imgui::ImFont> = None;
+static MENU: Shared<plugin_config::Edit<Config>> =
+    Shared::new(plugin_config::Edit::new(Config::DEFAULT));
+static FONT_INPUT: Shared<[u8; 168]> = Shared::new([0; 168]);
 
 #[forge::entry]
 fn main() {
@@ -31,56 +32,26 @@ fn main() {
     GAME_BASE.store(base, Ordering::Relaxed);
     if compatible(base) {
         let config = load_config();
+        MENU.with(|edit| *edit = plugin_config::Edit::new(config));
+        set_font_input(config);
         STATE.with(|state| state.config = config);
         unsafe { install_hooks(base) };
         INSTALLED.store(true, Ordering::Release);
         ENABLED.store(config.enabled, Ordering::Relaxed);
-        info!("mhgu-attack-damage-display v0.3: local attack damage, main=0x{base:08X}");
+        info!("mhgu-attack-damage-display v0.5: local attack damage, main=0x{base:08X}");
     }
 }
 
 fn load_config() -> Config {
-    let path = CONFIG_PATH.to_str().unwrap();
-    if !file_exists(CONFIG_PATH) {
-        warn!("mhgu-attack-damage-display: {path} missing; using defaults");
-        return Config::DEFAULT;
+    let mut bytes = [0; CONFIG_MAX_BYTES];
+    match plugin_config::DAMAGE.read(&mut bytes) {
+        Ok(text) => match Config::parse(text) {
+            Ok(config) => return config,
+            Err(error) => warn!("damage save INI line {}: {}", error.line, error.message),
+        },
+        Err(error) => warn!("damage save INI: {error:?}; using defaults"),
     }
-    let result = (|| {
-        let failure = |message| ConfigError { line: 0, message };
-        let file = MtFile::open(CONFIG_PATH, OpenMode::Read)
-            .map_err(|_| failure("could not open configuration"))?;
-        let mut bytes = [0; CONFIG_MAX_BYTES];
-        let length = file.size();
-        let read = if length <= bytes.len() {
-            file.read(&mut bytes[..length])
-        } else {
-            0
-        };
-        file.close();
-        file.destroy();
-        if length > bytes.len() {
-            return Err(failure("configuration exceeds 4096 bytes"));
-        }
-        if read != length {
-            return Err(failure("could not read the complete configuration"));
-        }
-        let text = core::str::from_utf8(&bytes[..length])
-            .map_err(|_| failure("save configuration as UTF-8"))?;
-        Config::parse(text)
-    })();
-    match result {
-        Ok(config) => {
-            info!("mhgu-attack-damage-display: loaded {path}");
-            config
-        }
-        Err(error) => {
-            warn!(
-                "mhgu-attack-damage-display: {path}, line {}: {}; using defaults",
-                error.line, error.message
-            );
-            Config::DEFAULT
-        }
-    }
+    Config::DEFAULT
 }
 
 fn file_exists(path: &core::ffi::CStr) -> bool {
@@ -132,6 +103,7 @@ pub extern "C" fn forge_onUpdate(_dt: f32) {
         return;
     }
     let projection = unsafe { Projection::current(base) };
+    snapshot.display = unsafe { display_area(base) };
     for event in snapshot.events.iter_mut().filter(|event| event.active) {
         event.visible = false;
         if let Some(screen) = unsafe { projection.project(event.world) } {
@@ -144,10 +116,7 @@ pub extern "C" fn forge_onUpdate(_dt: f32) {
 
 #[forge::imgui_free_render]
 fn draw_damage() {
-    let (display, seconds) = {
-        let io = imgui::get_io();
-        (io.DisplaySize, io.DeltaTime)
-    };
+    let seconds = imgui::get_io().DeltaTime;
     let seconds = if seconds.is_finite() && seconds > 0.0 {
         seconds
     } else {
@@ -157,7 +126,8 @@ fn draw_damage() {
     let config = snapshot.config;
     let draw = imgui::DrawList::foreground();
     let font = unsafe { CUSTOM_FONT }.unwrap_or_else(imgui::ImFont::current);
-    let scale = display.y / 720.0;
+    // Forge 的 DisplaySize 是整张交换纹理；掌机画面只使用其中的 1280×720。
+    let scale = snapshot.display.scale();
     imgui::push_font(&font, Some(config.font_size * scale));
     let mut visible = 0;
     for event in snapshot
@@ -169,9 +139,9 @@ fn draw_damage() {
         let text = event.digits.as_str();
         let text_size = imgui::calc_text_size(text, false, 0.0);
         let width = text_size.x * size / imgui::ImFont::current_size();
-        let x = event.screen[0] * display.x - width * 0.5
-            + ((event.serial % 5) as f32 - 2.0) * 6.0 * scale;
-        let y = event.screen[1] * display.y
+        let position = snapshot.display.position(event.screen);
+        let x = position[0] - width * 0.5 + ((event.serial % 5) as f32 - 2.0) * 6.0 * scale;
+        let y = position[1]
             - size
             - ((event.age / config.full_opacity).min(1.0) * 30.0 + (event.serial % 3) as f32 * 5.0)
                 * scale;
@@ -180,7 +150,7 @@ fn draw_damage() {
             config.outline_color[0],
             config.outline_color[1],
             config.outline_color[2],
-            alpha,
+            (u16::from(alpha) * u16::from(config.outline_color[3]) / 255) as u8,
         );
         let edge = config.outline_width * scale;
         if edge > 0.0 {
@@ -202,7 +172,12 @@ fn draw_damage() {
         } else {
             config.normal_color
         };
-        let color = imgui::color(rgb[0], rgb[1], rgb[2], alpha);
+        let color = imgui::color(
+            rgb[0],
+            rgb[1],
+            rgb[2],
+            (u16::from(alpha) * u16::from(rgb[3]) / 255) as u8,
+        );
         draw.add_text_with_font(&font, size, ImVec2::new(x, y), color, text);
         visible += 1;
     }
@@ -212,16 +187,79 @@ fn draw_damage() {
 
 #[forge::imgui_render]
 fn draw_settings() {
-    imgui::separator_text(c"MHGU Attack Damage Display v0.3");
+    // Forge 共用一个 Plugin UI 窗口；折叠标题不会替内部控件建立 ID 作用域。
+    imgui::push_id(imgui::Id::Str(c"attack_damage_display"));
+    if imgui::tree_node(c"Attack Damage Display") {
+        draw_settings_body();
+        imgui::tree_pop();
+    }
+    imgui::pop_id();
+}
+
+fn draw_settings_body() {
     if !INSTALLED.load(Ordering::Acquire) {
         imgui::text("Hook addresses did not match. See Forge log.");
         return;
     }
-    let mut enabled = ENABLED.load(Ordering::Relaxed);
-    if imgui::checkbox(c"Show attack damage", &mut enabled) {
-        ENABLED.store(enabled, Ordering::Relaxed);
-        STATE.with(|state| state.clear());
-    }
+    MENU.with(|edit| {
+        let c = &mut edit.draft;
+        imgui::checkbox(c"Show attack damage", &mut c.enabled);
+        plugin_config::number(c"Font size", &mut c.font_size, 8.0, 128.0);
+        plugin_config::number(c"Outline width", &mut c.outline_width, 0.0, 10.0);
+        plugin_config::number(c"Full opacity (seconds)", &mut c.full_opacity, 0.01, 59.99);
+        plugin_config::number(c"Total lifetime (seconds)", &mut c.lifetime, 0.02, 60.0);
+        plugin_config::color4(c"Hitzone 45+ / fixed damage color", &mut c.highlight_color);
+        plugin_config::color4(c"Normal damage color", &mut c.normal_color);
+        plugin_config::color4(c"Outline color", &mut c.outline_color);
+        let mut input = FONT_INPUT.with(|b| *b);
+        if imgui::input_text(c"Font TTF filename", &mut input, ImGuiInputTextFlags::None) {
+            FONT_INPUT.with(|b| *b = input);
+            edit.message = "";
+            if let Ok(name) = plugin_config::input_text(&input) {
+                if name == "default" {
+                    c.font_file = None;
+                } else if let Some(file) = FontFile::new(name) {
+                    c.font_file = Some(file);
+                }
+            }
+        }
+        imgui::text("Appearance previews live. Font file changes need save and restart.");
+        let valid_timing = c.full_opacity > 0.0 && c.full_opacity < c.lifetime;
+        if !valid_timing {
+            imgui::text("Keep 0 < full opacity < total lifetime <= 60.");
+        }
+        let reset = plugin_config::footer(
+            edit,
+            Config::DEFAULT,
+            &plugin_config::DAMAGE,
+            false,
+            |config| {
+                let name = plugin_config::input_text(&input)?;
+                if name != "default" && FontFile::new(name).is_none() {
+                    return Err("Font must be default or a .ttf filename without a directory.");
+                }
+                let mut text = plugin_config::Text::<CONFIG_MAX_BYTES>::new();
+                config
+                    .write_ini(&mut text)
+                    .map_err(|_| "Configuration too large.")?;
+                Config::parse(text.as_str()).map_err(|e| e.message)?;
+                plugin_config::DAMAGE.save(text.as_str())
+            },
+        );
+        if reset {
+            set_font_input(edit.draft);
+        }
+        let config = edit.draft;
+        if config.full_opacity > 0.0 && config.full_opacity < config.lifetime {
+            let changed = ENABLED.swap(config.enabled, Ordering::Relaxed) != config.enabled;
+            STATE.with(|state| {
+                if changed {
+                    state.clear();
+                }
+                state.config = config;
+            });
+        }
+    });
     imgui::text("Numbers appear at the hit point");
     imgui::text("Hitzone >=45 / fixed: highlight color; <45: normal color");
     for (label, value) in [
@@ -233,6 +271,18 @@ fn draw_settings() {
         imgui::same_line(0.0, -1.0);
         imgui::text(Digits::new(value).as_str());
     }
+}
+
+fn set_font_input(config: Config) {
+    FONT_INPUT.with(|b| {
+        plugin_config::set_input(
+            b,
+            config
+                .font_file
+                .as_ref()
+                .map_or("default", FontFile::filename),
+        )
+    });
 }
 
 // 游戏内存读取、本地玩家识别和坐标投影。
@@ -262,6 +312,17 @@ unsafe fn epoch(player: u32) -> Epoch {
     Epoch {
         player,
         room: unsafe { read_u8(player + 0x1054) },
+    }
+}
+
+unsafe fn display_area(base: u32) -> DisplayArea {
+    // 图形管理器 +B0/+B4 同时用于游戏绘图和 nvnWindowSetCrop 的宽高。
+    // +00BC0874 将它们传给 +0086A24C；裁剪原点固定为 (0, 0)。
+    // 每次投影读取当前值，掌机/主机切换后同步更新插件快照。
+    let graphics = unsafe { read_u32(base + 0x02126998) };
+    DisplayArea {
+        width: unsafe { read_u32(graphics + 0xB0) } as f32,
+        height: unsafe { read_u32(graphics + 0xB4) } as f32,
     }
 }
 
@@ -344,6 +405,8 @@ fn compatible(base: u32) -> bool {
         (0x0027627C, 0xE1A04000),
         (0x000BAB60, 0xE3510008),
         (0x000BAB64, 0x3A000002),
+        (0x0086A24C, 0xE92D4800),
+        (0x0086A250, 0xE24DD008),
     ] {
         let actual = unsafe { read_u32(base + offset) };
         if actual != expected {
@@ -359,10 +422,22 @@ fn compatible(base: u32) -> bool {
 // 当前加载器的 76 字节 Hook 返回类型在 data.rs 定义。
 unsafe extern "C" {
     #[link_name = "forge_hook_create"]
-    fn create_hook(target: u32, detour: u32, original: *mut u32) -> RuntimeHook;
+    fn create_hook_raw(
+        output: *mut RuntimeHook,
+        target: u32,
+        detour: u32,
+        original: *mut u32,
+    ) -> *mut RuntimeHook;
 }
 
 // 每次原命中调用绑定栈上下文；嵌套命中结束后恢复上一层。
+// 显式清零最大 SRET 缓冲，兼容当前 24 字节与旧版 76 字节返回区。
+unsafe fn create_hook(target: u32, detour: u32, original: *mut u32) -> RuntimeHook {
+    let mut hook: RuntimeHook = unsafe { core::mem::zeroed() };
+    unsafe { create_hook_raw(&raw mut hook, target, detour, original) };
+    hook
+}
+
 unsafe fn install_hooks(base: u32) {
     // 由加载器初始化阶段安装；整个进程生命周期内保留两个 JIT 跳板。
     unsafe {
