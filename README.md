@@ -1,68 +1,128 @@
-# MHGU Attack Damage Display
+# MHXX Attack Damage Display
 
-为《怪物猎人 XX / Generations Ultimate》增加攻击伤害数字，在命中位置附近显示本地猎人的伤害。适用于 **MHGU 1.4.0**，需要先安装与本项目配套的 Forge 前置。
+A Forge plugin that displays the local hunter's attack damage in **Monster Hunter XX (Japanese version 1.5.1)**.
 
-## 功能与改动
+This project is a fork of [Lawrence-al/mhgu-attack-damage-display](https://github.com/Lawrence-al/mhgu-attack-damage-display), which was originally made for MHGU 1.4.0. This fork adapts the plugin for MHXX Japanese v1.5.1 and requires an **MHXX-compatible build of Forge**.
 
-- 每次有效命中独立显示数字，支持多段攻击与猎人归属的瓶爆。
-- 物理肉质 **≥45** 默认黄字，**<45** 默认白字；无视物理肉质的伤害使用黄字，例如榴弹瓶伤。
-- 默认字号 34，显示 1.40 秒，前 1.10 秒完全不透明，最后 0.30 秒淡出。
-- 支持描边、颜色、字体及显示时长配置，可在 Forge 菜单保存。
-- 修复掌机模式下数字偏右下的问题，无需为了显伤切换主机模式。
+> **Compatibility:** This project targets Monster Hunter XX (Japanese version 1.5.1). Other game versions and regions are not guaranteed to work.
 
-数字保留命中时的位置，镜头移动时会更新屏幕位置；不会持续跟随怪物的肢体移动。本版只显示本地猎人的命中伤害，不包含队友、随从和毒等持续扣血。
+## Features
 
-## 安装与使用
+- Displays damage numbers near the local hunter's hit location.
+- Displays a separate number for each valid hit, including multi-hit attacks and phial explosions attributed to the hunter.
+- Uses the game's original numeric font.
+- Uses the existing Forge-configured text color rather than the original separate hitzone-based highlight and normal colors.
+- Shows affinity indicators for critical hits and negative-affinity hits.
+- Keeps numbers anchored to their hit locations while updating their screen positions as the camera moves. Numbers do not continuously follow moving monster body parts.
 
-1. 安装配套 Forge 前置。
-2. 将 `attack_damage_display.nro` 放入 MHGU Mod 的 `romfs/nativeNX/plugins/`。
-3. 完全退出并重启游戏，进入任务攻击怪物。
+Only damage from the local hunter is displayed. Damage from other hunters, companions, and damage-over-time effects such as poison is not included.
 
-插件目录只保留一份显伤 NRO。升级时覆盖同名文件，已有 INI 保留；移出 NRO 并重启即可停用。
+## Requirements
 
-## 修改配置
+- Monster Hunter XX — Japanese version 1.5.1
+- An MHXX-compatible build of Forge
+- A compatible game runtime or emulator
 
-打开 **Forge → Plugin UI → Attack Damage Display**。外观设置立即预览，点击 **Save INI** 保存；**Revert changes** 恢复上次保存值，**Defaults** 恢复默认草稿，仍需保存。
+Install and verify Forge before installing this plugin. The original MHGU Forge build is not a substitute for the MHXX-compatible build required by this fork.
 
-首次运行在 **MHGU 当前用户的存档根目录**生成 `attack_damage_display.ini`，不建子目录。菜单与手动编辑使用同一文件。手动编辑 INI 或更换字体后，需要重启游戏。
+## Installation
 
-| 设置 | 默认值与用途 |
-| --- | --- |
-| `enabled` | `true`，显示攻击伤害 |
-| `font_size` | `34`，以 720p 为基准，自动适配主机模式 |
-| `highlight_color` | `#FFDC50FF`，高肉质及无视物理肉质伤害的颜色 |
-| `normal_color` | `#FFFFFFFF`，低于 45 肉质的颜色 |
-| `outline_width` | `2`，描边宽度；`0` 关闭 |
-| `full_opacity` | `1.10`，完全不透明的秒数 |
-| `lifetime` | `1.40`，总显示秒数 |
+1. Install the MHXX-compatible Forge build and confirm that it loads correctly.
+2. Download the latest release from the [Releases](https://github.com/ZellD-0371/MHXX-Damage-Display/releases/latest) page.
+3. Extract the package while preserving its directory structure, or copy `attack_damage_display.nro` into the plugin directory of your MHXX mod:
 
-颜色使用 `#RRGGBBAA`，最后两位为透明度。总时长需要大于完全不透明时长。默认配置模板放在 [conf/attack_damage_display.ini](conf/attack_damage_display.ini)，编译时嵌入 NRO；游戏运行时仍读写存档根目录的同名文件。
+   ```text
+   romfs/nativeNX/plugins/attack_damage_display.nro
+   ```
 
-自定义字体放入 `romfs/nativeNX/forge/fonts/`，在 `font_file` 中填写有效 TTF 的文件名；`default` 使用 Forge 默认字体。字号由本插件的设置控制。
+4. Make sure there is only one copy of `attack_damage_display.nro` in the plugin directory.
+5. Fully close and restart the game, then enter a quest and attack a monster to test the display.
 
-## 编译
+To update, replace the existing NRO with the new version. Your existing `attack_damage_display.ini` settings are preserved. To disable the plugin, remove the NRO and restart the game.
 
-本项目可以单独下载编译，无需 MHGU-forge 工作区。准备 Git、Rust nightly、`rust-src` 和 devkitPro / devkitARM。Windows 使用 devkitPro 的 MSYS2 Bash，Rust MSVC 工具链需要 C++ Build Tools。
+## Configuration
 
-从本项目根目录执行：
+Open **Forge → Plugin UI → Attack Damage Display** to adjust the plugin settings.
+
+- **Save INI** saves the current settings.
+- **Revert changes** restores the previously saved settings.
+- **Defaults** restores the default values in the current settings editor; save afterward to keep them.
+
+The plugin reads and writes `attack_damage_display.ini` in the current MHXX user's save-data root; it does not create a separate configuration subdirectory. The menu and manual edits use the same file. Restart the game after editing the INI manually.
+
+### Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enables or disables damage display. |
+| `font_size` | `20` | Damage-number size, based on 1080p and scaled for emulator. |
+| `outline_width` | `0.6` | Text outline width. Set to `0` to disable the outline. |
+| `full_opacity` | `1.0` | Time in seconds that the number remains fully opaque. |
+| `lifetime` | `1.3` | Total time in seconds that the number is displayed. |
+
+The total `lifetime` must be greater than `full_opacity`. Text color follows the existing Forge color setting.
+
+## Building from Source
+
+The project can be built separately; an MHGU Forge workspace is not required. Build requirements include Git, Rust nightly with `rust-src`, and devkitPro/devkitARM. On Windows, use the devkitPro MSYS2 Bash environment for `build.sh`. The Rust MSVC toolchain may also require the Visual Studio C++ Build Tools.
+
+Install the Rust nightly components:
 
 ```bash
 rustup toolchain install nightly --component rust-src
+```
+
+From the project root, build the NRO:
+
+```bash
 bash "build.sh"
 ```
 
-最终 NRO 为 `dist/attack_damage_display.nro`。SDK 和打包工具取自固定的公开 Git 提交，工具安装在本项目 `target/`，不需要全局安装。首次构建需要联网下载依赖；缓存齐全后使用 `bash "build.sh" --offline`。
-
-Windows 也可执行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1`；离线时在末尾加 `-Offline`。devkitPro 默认位置为 `C:/devkitPro`，其它位置用当前进程的 `DEVKITPRO` 指定。
-
-## 验证与打包
-
-安装 Node.js 后运行 `bash "test.sh"`，检查默认配置、菜单保存和 NRO 格式。可传入配套 Forge NSO 和原版 MHGU ExeFS 目录，额外核对真实导出与游戏指令：
+The output NRO is written to `dist/attack_damage_display.nro`. The build scripts place their SDK and packaging tools under the project's `target/` directory. The first build needs an internet connection to download dependencies. If the required dependencies are already cached, use:
 
 ```bash
-bash "test.sh" "Forge subsdk9" "MHGU ExeFS目录"
+bash "build.sh" --offline
 ```
 
-测试通过后，使用 Python 3 执行 `python "tools/package.py"`，生成 `dist/attack_damage_display.zip`。也可用 `node "tools/install.cjs" "你的Mod目录/romfs/nativeNX/plugins"` 安装当前产物。安装和打包均不复制 INI，已有存档配置保留。
+On Windows, you can also run the PowerShell build script:
 
-编译和默认测试不需要游戏本体文件。以上验证不代替实机或模拟器中的狩猎测试。
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+Append `-Offline` to the PowerShell command to request an offline build. The default devkitPro path is `C:/devkitPro`; set `DEVKITPRO` in the current process if your installation is elsewhere.
+
+## Testing and Packaging
+
+With Node.js installed, run the project's checks:
+
+```bash
+bash "test.sh"
+```
+
+The checks cover the default configuration, settings persistence, and NRO format. They do not replace testing in the target game.
+
+After a successful build, Python 3 can create a release package:
+
+```bash
+python "tools/package.py"
+```
+
+This generates `dist/attack_damage_display.zip`. To install the current build using the included Node.js helper, run:
+
+```bash
+node "tools/install.cjs" "path/to/your/mod/romfs/nativeNX/plugins"
+```
+
+Packaging and installation do not overwrite or copy your save-data INI, so existing settings are preserved. A game installation is not required for the basic build and configuration checks, but the final plugin should be tested in MHXX Japanese v1.5.1 with the compatible Forge build.
+
+## Credits
+
+- **Original project:** [Lawrence-al/mhgu-attack-damage-display](https://github.com/Lawrence-al/mhgu-attack-damage-display)
+- **Forge:** This plugin requires an MHXX-compatible Forge build.
+
+This project is derived from the original project. See the repository's `LICENSE` file for the applicable license terms, and retain the original copyright and license notices as required.
+
+## Disclaimer
+
+This is an unofficial fan-made project. It is not affiliated with, endorsed by, or supported by Capcom.
