@@ -1,4 +1,3 @@
-//! 伤害数字的数据结构、固定队列、共享状态和数据操作。
 #![cfg_attr(test, allow(dead_code))]
 
 use core::{
@@ -9,12 +8,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-// 事件不持有游戏指针；只保留命中点、数字、颜色和用于清理的玩家/区域编号。
 pub const CAPACITY: usize = 64;
 
 pub const CONFIG_MAX_BYTES: usize = 4096;
 
-// 外观配置和解析留在数据文件，不增加第三个 Rust 文件或 INI 依赖。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
     pub enabled: bool,
@@ -72,7 +69,7 @@ impl Config {
     pub fn write_ini(&self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
         writeln!(
             out,
-            "; MHGU save: /attack_damage_display.ini\n[display]\nenabled = {}\nfont_size = {}\nfont_file = {}",
+            "; MHXX save: /attack_damage_display.ini\n[display]\nenabled = {}\nfont_size = {}\nfont_file = {}",
             self.enabled,
             self.font_size,
             self.font_file
@@ -95,14 +92,14 @@ impl Config {
 
     pub const DEFAULT: Self = Self {
         enabled: true,
-        font_size: 34.0,
+        font_size: 20.0,
         font_file: None,
-        highlight_color: [255, 220, 80, 255],
-        normal_color: [255, 255, 255, 255],
+        highlight_color: [241, 160, 44, 255],
+        normal_color: [186, 186, 186, 255],
         outline_color: [10, 10, 10, 255],
-        outline_width: 2.0,
-        full_opacity: 1.10,
-        lifetime: 1.40,
+        outline_width: 0.6,
+        full_opacity: 1.0,
+        lifetime: 1.3,
     };
 
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
@@ -269,6 +266,7 @@ pub struct Event {
     pub active: bool,
     pub visible: bool,
     pub yellow: bool,
+    pub critical_state: u8,
     pub digits: Digits,
 }
 
@@ -281,6 +279,7 @@ impl Event {
         active: false,
         visible: false,
         yellow: false,
+        critical_state: 0,
         digits: Digits {
             bytes: [0; 10],
             start: 10,
@@ -367,6 +366,12 @@ impl State {
     }
 
     pub fn push(&mut self, epoch: Epoch, world: [f32; 3], damage: i32, yellow: bool) -> bool {
+        self.push_with_critical(epoch, world, damage, yellow, 0)
+    }
+
+    pub fn push_with_critical(
+        &mut self, epoch: Epoch, world: [f32; 3], damage: i32, yellow: bool, critical_state: u8,
+    ) -> bool {
         if !world.iter().all(|value| value.is_finite()) || !(1..=32767).contains(&damage) {
             return false;
         }
@@ -383,6 +388,7 @@ impl State {
             active: true,
             visible: false,
             yellow,
+            critical_state: if critical_state == 1 || critical_state == 2 { critical_state } else { 0 },
             digits: Digits::new(damage as u32),
         };
         self.next = (self.next + 1) % CAPACITY;

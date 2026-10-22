@@ -15,9 +15,9 @@ macro_rules! location {
     ($name:ident, $file:literal, $defaults:literal) => {
         pub const $name: Location = Location {
             path: unsafe {
-                CStr::from_bytes_with_nul_unchecked(concat!("savedata:/", $file, "\0").as_bytes())
+                CStr::from_bytes_with_nul_unchecked(concat!("forge_savedata:/", $file, "\0").as_bytes())
             },
-            display: concat!("MHGU save: /", $file),
+            display: concat!("MHXX save: /", $file),
             defaults: include_str!($defaults),
         };
     };
@@ -76,7 +76,7 @@ impl SaveMount {
         if unsafe { forge_fs_mountSaveData() } {
             Ok(Self)
         } else {
-            warn!("Could not mount MHGU savedata");
+            warn!("Could not mount MHXX savedata");
             Err(ReadError::Unavailable)
         }
     }
@@ -181,9 +181,9 @@ impl Location {
             return self.failed(code, "Could not write save INI. See Forge log.");
         }
         // Forge 的释放接口也会提交；先检查一次结果，保存按钮才能准确报告提交失败。
-        let code = unsafe { commit_save(c"savedata".as_ptr()) };
+        let code = unsafe { commit_save(c"forge_savedata".as_ptr()) };
         if code != 0 {
-            return self.failed(code, "Could not commit MHGU save INI. See Forge log.");
+            return self.failed(code, "Could not commit MHXX save INI. See Forge log.");
         }
         info!("{}: saved", self.display);
         Ok(())

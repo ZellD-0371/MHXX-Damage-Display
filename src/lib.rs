@@ -1,7 +1,8 @@
-//! MHGU 1.4.0 本地伤害数字：采集命中 → 伤害入账 → 游戏投影 → Forge 绘制。
+//! MHXX Japan 1.5.1 experimental port: hit capture -> damage -> projection -> Forge drawing.
 #![no_std]
 
 mod data;
+mod wilds_style; // WILDS_STYLE_INTEGRATED
 #[path = "../shared/plugin_config.rs"]
 mod plugin_config;
 
@@ -21,7 +22,11 @@ use forge::{
 
 // Forge 入口、更新和绘图。
 // 字体仅在 ImGui 初始化时写入，随后由同一渲染线程读取。
+const DIAGNOSTIC_ONLY: bool = false;
+static JP_DIAGNOSTIC_FRAME: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static mut CUSTOM_FONT: Option<imgui::ImFont> = None;
+static JP_COLLISION_PROBE_CALLS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static JP_DAMAGE_PROBE_CALLS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static MENU: Shared<plugin_config::Edit<Config>> =
     Shared::new(plugin_config::Edit::new(Config::DEFAULT));
 static FONT_INPUT: Shared<[u8; 168]> = Shared::new([0; 168]);
@@ -31,6 +36,12 @@ fn main() {
     let base = forge::mem::text_addr();
     GAME_BASE.store(base, Ordering::Relaxed);
     if compatible(base) {
+        if DIAGNOSTIC_ONLY {
+            unsafe { diagnose_globals(base) };
+            unsafe { install_collision_probe(base) };
+            unsafe { install_damage_probe(base) };
+            return;
+        }
         let config = load_config();
         MENU.with(|edit| *edit = plugin_config::Edit::new(config));
         set_font_input(config);
@@ -38,7 +49,7 @@ fn main() {
         unsafe { install_hooks(base) };
         INSTALLED.store(true, Ordering::Release);
         ENABLED.store(config.enabled, Ordering::Relaxed);
-        info!("mhgu-attack-damage-display v0.5: local attack damage, main=0x{base:08X}");
+        info!("mhxx-jp-1.5.1-attack-damage-display v0.5: local attack damage, main=0x{base:08X}");
     }
 }
 
@@ -77,20 +88,28 @@ pub extern "C" fn forge_onImGuiInit(
             Some(font) => {
                 unsafe { CUSTOM_FONT = Some(font) };
                 info!(
-                    "mhgu-attack-damage-display: loaded font {}",
+                    "mhxx-jp-1.5.1-attack-damage-display: loaded font {}",
                     path.to_str().unwrap()
                 );
             }
             None => warn!(
-                "mhgu-attack-damage-display: could not load font {}; using Forge font",
+                "mhxx-jp-1.5.1-attack-damage-display: could not load font {}; using Forge font",
                 path.to_str().unwrap()
             ),
         }
     }
+    // Wilds atlas initialization is deferred until the first live draw callback.
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn forge_onUpdate(_dt: f32) {
+    if DIAGNOSTIC_ONLY {
+        let base = GAME_BASE.load(Ordering::Relaxed);
+        if base != 0 {
+            unsafe { diagnose_runtime_getter(base) };
+        }
+        return;
+    }
     // 在游戏更新结束后投影；NVN 绘制回调只读插件快照，不访问游戏对象。
     let mut snapshot = STATE.with(|state| state.snapshot());
     if !snapshot.any_active() {
@@ -153,20 +172,6 @@ fn draw_damage() {
             (u16::from(alpha) * u16::from(config.outline_color[3]) / 255) as u8,
         );
         let edge = config.outline_width * scale;
-        if edge > 0.0 {
-            for (dx, dy) in [
-                (-edge, 0.0),
-                (edge, 0.0),
-                (0.0, -edge),
-                (0.0, edge),
-                (-edge, -edge),
-                (-edge, edge),
-                (edge, -edge),
-                (edge, edge),
-            ] {
-                draw.add_text_with_font(&font, size, ImVec2::new(x + dx, y + dy), outline, text);
-            }
-        }
         let rgb = if event.yellow {
             config.highlight_color
         } else {
@@ -178,7 +183,25 @@ fn draw_damage() {
             rgb[2],
             (u16::from(alpha) * u16::from(rgb[3]) / 255) as u8,
         );
-        draw.add_text_with_font(&font, size, ImVec2::new(x, y), color, text);
+        // Prefer the Wilds number atlas, but retain the proven font renderer as a fallback.
+        if true /* keep Forge TTF digits; Wilds accents only */ {
+            if edge > 0.0 {
+                for (dx, dy) in [
+                    (-edge, 0.0),
+                    (edge, 0.0),
+                    (0.0, -edge),
+                    (0.0, edge),
+                    (-edge, -edge),
+                    (-edge, edge),
+                    (edge, -edge),
+                    (edge, edge),
+                ] {
+                    draw.add_text_with_font(&font, size, ImVec2::new(x + dx, y + dy), outline, text);
+                }
+            }
+            draw.add_text_with_font(&font, size, ImVec2::new(x, y), color, text);
+            wilds_style::draw_effects(&draw, x, y, width, size, event.critical_state, alpha);
+        }
         visible += 1;
     }
     imgui::pop_font();
@@ -197,6 +220,11 @@ fn draw_settings() {
 }
 
 fn draw_settings_body() {
+    if DIAGNOSTIC_ONLY {
+        imgui::text("Japanese MHXX 1.5.1 diagnostic mode: hooks intentionally disabled.");
+        imgui::text("Inspect Forge logs for the raw manager-slot values.");
+        return;
+    }
     if !INSTALLED.load(Ordering::Acquire) {
         imgui::text("Hook addresses did not match. See Forge log.");
         return;
@@ -294,6 +322,69 @@ unsafe fn read_u8(address: u32) -> u8 {
     unsafe { ptr::read_volatile(address as *const u8) }
 }
 
+unsafe fn diagnose_globals(base: u32) {
+    // Read only the slots themselves. Do not dereference the returned pointers
+    // and do not invoke the indexed getter in diagnostic mode.
+    let player_manager = unsafe { read_u32(base + 0x018A6FA8) };
+    let player_neighbor_4 = unsafe { read_u32(base + 0x018A6FAC) };
+    let player_neighbor_C = unsafe { read_u32(base + 0x018A6FB4) };
+    let getter_context = unsafe { read_u32(base + 0x0185A990) };
+    let camera_manager = unsafe { read_u32(base + 0x0186F750) };
+    let ui_manager = unsafe { read_u32(base + 0x0214868C) };
+    let graphics_manager = unsafe { read_u32(base + 0x02148998) };
+
+    info!("mhxx-jp-1.5.1 diagnostic: main/text base=0x{base:08X}");
+    info!("mhxx-jp-1.5.1 diagnostic: player slot +0x018A6FA8=0x{player_manager:08X}; adjacent +4=0x{player_neighbor_4:08X}, +0xC=0x{player_neighbor_C:08X}");
+    info!("mhxx-jp-1.5.1 diagnostic: getter context slot +0x0185A990=0x{getter_context:08X}");
+    info!("mhxx-jp-1.5.1 diagnostic: camera slot +0x0186F750=0x{camera_manager:08X}; UI slot +0x0214868C=0x{ui_manager:08X}; graphics slot +0x02148998=0x{graphics_manager:08X}");
+    info!("mhxx-jp-1.5.1 diagnostic: hooks were intentionally NOT installed");
+}
+
+unsafe fn diagnose_runtime_getter(base: u32) {
+    // Log every 300 update callbacks (~5 seconds at 60 FPS); delay the first
+    // call so the title/loading transition has time to settle.
+    let frame = JP_DIAGNOSTIC_FRAME.fetch_add(1, Ordering::Relaxed);
+    if frame == 0 || frame % 300 != 0 {
+        return;
+    }
+
+    let context = unsafe { read_u32(base + 0x018A6FA8) };
+    let alternative = unsafe { read_u32(base + 0x0185A990) };
+    if context < 0x40000000 || context >= 0x60000000 || context & 3 != 0 {
+        info!("mhxx-jp-1.5.1 runtime getter probe: skip; candidate context=0x{context:08X} fails heap-range/alignment check; alternative=0x{alternative:08X}");
+        return;
+    }
+
+    // This is the function and call shape used by the original project's
+    // local_player(): getter(context). No hooks are installed and no memory is
+    // written. The return value is logged only; it is not dereferenced.
+    let getter: unsafe extern "C" fn(u32) -> u32 =
+        unsafe { mem::transmute(base + 0x002734D0) };
+    let result = unsafe { getter(context) };
+    let pointer_like = result >= 0x40000000 && result < 0x60000000 && result & 3 == 0;
+    // Original MHGU uses player+0x1054 as a room/epoch byte. Read only this
+    // known field when the returned pointer passes the basic range/alignment guard.
+    // The guard is heuristic; it does not prove that the address is mapped.
+    let (room_field, weight_slash, weight_blunt, flags_13cc) = if pointer_like {
+        // These fields are read by the original mod when classifying damage:
+        // +0x1054 is its room/epoch byte; +0x2B70/+0x2B71 are hitzone weights;
+        // +0x13CC contains a flag used to select a physical damage channel.
+        // The range/alignment check is heuristic, not a proof of mapped memory.
+        unsafe {
+            (
+                read_u8(result + 0x1054),
+                read_u8(result + 0x2B70),
+                read_u8(result + 0x2B71),
+                read_u8(result + 0x13CC),
+            )
+        }
+    } else {
+        (0xFF, 0xFF, 0xFF, 0xFF)
+    };
+    let weights_plausible = weight_slash <= 100 && weight_blunt <= 100;
+    info!("mhxx-jp-1.5.1 player-layout probe: frame={frame} context=0x{context:08X} result=0x{result:08X} heap_like={pointer_like} room_field_1054=0x{room_field:02X} weights_2B70_2B71=0x{weight_slash:02X},0x{weight_blunt:02X} weights_le_100={weights_plausible} flags_13CC=0x{flags_13cc:02X} alternative_slot_value=0x{alternative:08X}");
+}
+
 fn thread_key() -> u32 {
     let value: u32;
     // AArch32 TPIDRURO：只用 TLS 地址区分调用线程，不解引用 OS 内部结构。
@@ -304,8 +395,8 @@ fn thread_key() -> u32 {
 }
 
 unsafe fn local_player(base: u32) -> u32 {
-    let get: unsafe extern "C" fn(u32) -> u32 = unsafe { mem::transmute(base + 0x00276278) };
-    unsafe { get(read_u32(base + 0x01885B58)) }
+    let get: unsafe extern "C" fn(u32) -> u32 = unsafe { mem::transmute(base + 0x002734D0) };
+    unsafe { get(read_u32(base + 0x018A6FA8)) }
 }
 
 unsafe fn epoch(player: u32) -> Epoch {
@@ -317,9 +408,9 @@ unsafe fn epoch(player: u32) -> Epoch {
 
 unsafe fn display_area(base: u32) -> DisplayArea {
     // 图形管理器 +B0/+B4 同时用于游戏绘图和 nvnWindowSetCrop 的宽高。
-    // +00BC0874 将它们传给 +0086A24C；裁剪原点固定为 (0, 0)。
+    // +00BC0874 将它们传给 +0085EC7C；裁剪原点固定为 (0, 0)。
     // 每次投影读取当前值，掌机/主机切换后同步更新插件快照。
-    let graphics = unsafe { read_u32(base + 0x02126998) };
+    let graphics = unsafe { read_u32(base + 0x02148998) };
     DisplayArea {
         width: unsafe { read_u32(graphics + 0xB0) } as f32,
         height: unsafe { read_u32(graphics + 0xB4) } as f32,
@@ -333,7 +424,7 @@ unsafe fn damage_is_yellow(base: u32, contact: Contact) -> bool {
         return true;
     }
     let get_hitzones: unsafe extern "C" fn(u32, u32) -> u32 =
-        unsafe { mem::transmute(base + 0x000BAB60) };
+        unsafe { mem::transmute(base + 0x000B989C) };
     let table = unsafe { get_hitzones(contact.monster, contact.part_index as u32) };
     let hitzones = unsafe { [read_u8(table), read_u8(table + 1), read_u8(table + 2)] };
     let weights = if flags & 0x20 != 0 {
@@ -363,12 +454,12 @@ unsafe fn damage_is_yellow(base: u32, contact: Contact) -> bool {
 
 impl Projection {
     pub unsafe fn current(base: u32) -> Self {
-        let manager = unsafe { read_u32(base + 0x0184D750) };
-        let ui = unsafe { read_u32(base + 0x0212668C) };
+        let manager = unsafe { read_u32(base + 0x0186F750) };
+        let ui = unsafe { read_u32(base + 0x0214868C) };
         let view = unsafe { read_u8(ui + 0xEC) } as u32;
         let record = manager + view * 0x1B0;
         Self {
-            function: unsafe { mem::transmute(base + 0x00018A48) },
+            function: unsafe { mem::transmute(base + 0x00018238) },
             manager,
             view,
             width: (unsafe { read_u32(record + 0x70) } as i32
@@ -395,23 +486,23 @@ impl Projection {
 
 fn compatible(base: u32) -> bool {
     for (offset, expected) in [
-        (0x00170968, 0xE92D41F0),
-        (0x0017096C, 0xE24DD010),
-        (0x0009D6F8, 0xE92D4BF0),
-        (0x0009D6FC, 0xED2D8B02),
-        (0x00018A48, 0xE92D4FF0),
-        (0x00018A4C, 0xE28DB01C),
-        (0x00276278, 0xE92D4010),
-        (0x0027627C, 0xE1A04000),
-        (0x000BAB60, 0xE3510008),
-        (0x000BAB64, 0x3A000002),
-        (0x0086A24C, 0xE92D4800),
-        (0x0086A250, 0xE24DD008),
+        (0x0016DF60, 0xE92D41F0),
+        (0x0016DF64, 0xE24DD010),
+        (0x0009C508, 0xE92D4BF0),
+        (0x0009C50C, 0xED2D8B02),
+        (0x00018238, 0xE92D4FF0),
+        (0x0001823C, 0xE28DB01C),
+        (0x002734D0, 0xE92D4010),
+        (0x002734D4, 0xE1A04000),
+        (0x000B989C, 0xE3510008),
+        (0x000B98A0, 0x3A000002),
+        (0x0085EC7C, 0xE92D4800),
+        (0x0085EC80, 0xE24DD008),
     ] {
         let actual = unsafe { read_u32(base + offset) };
         if actual != expected {
             error!(
-                "mhgu-attack-damage-display: main+0x{offset:08X}=0x{actual:08X}, expected 0x{expected:08X}; hooks skipped"
+                "mhxx-jp-1.5.1-attack-damage-display: main+0x{offset:08X}=0x{actual:08X}, expected 0x{expected:08X}; hooks skipped"
             );
             return false;
         }
@@ -438,13 +529,46 @@ unsafe fn create_hook(target: u32, detour: u32, original: *mut u32) -> RuntimeHo
     hook
 }
 
+unsafe fn install_damage_probe(base: u32) {
+    // Install a trampoline around the JP 1.5.1 candidate only. The damage
+    // display pipeline stays disabled because DIAGNOSTIC_ONLY returns before
+    // config loading and ENABLED remains false.
+    unsafe {
+        ptr::write(
+            &raw mut DAMAGE_HOOK,
+            MaybeUninit::new(create_hook(
+                base + 0x0009C508,
+                damage as *const () as u32,
+                &raw mut DAMAGE_ORIGINAL,
+            )),
+        );
+    }
+    info!("mhxx-jp-1.5.1 passive damage probe installed at main+0x0009C508; damage-number pipeline remains disabled");
+}
+
+unsafe fn install_collision_probe(base: u32) {
+    // Reuse the project's Hook wrapper/return storage, but install ONLY the
+    // collision callback. DAMAGE_HOOK is deliberately left untouched.
+    unsafe {
+        ptr::write(
+            &raw mut COLLISION_HOOK,
+            MaybeUninit::new(create_hook(
+                base + 0x0016DF60,
+                collision as *const () as u32,
+                &raw mut COLLISION_ORIGINAL,
+            )),
+        );
+    }
+    info!("mhxx-jp-1.5.1 collision-only probe installed at main+0x0016DF60; damage hook remains disabled");
+}
+
 unsafe fn install_hooks(base: u32) {
     // 由加载器初始化阶段安装；整个进程生命周期内保留两个 JIT 跳板。
     unsafe {
         ptr::write(
             &raw mut DAMAGE_HOOK,
             MaybeUninit::new(create_hook(
-                base + 0x0009D6F8,
+                base + 0x0009C508,
                 damage as *const () as u32,
                 &raw mut DAMAGE_ORIGINAL,
             )),
@@ -452,7 +576,7 @@ unsafe fn install_hooks(base: u32) {
         ptr::write(
             &raw mut COLLISION_HOOK,
             MaybeUninit::new(create_hook(
-                base + 0x00170968,
+                base + 0x0016DF60,
                 collision as *const () as u32,
                 &raw mut COLLISION_ORIGINAL,
             )),
@@ -471,6 +595,13 @@ unsafe extern "C" fn collision(
     shape: u32,
 ) -> u32 {
     let base = GAME_BASE.load(Ordering::Relaxed);
+    // Sample sparsely: log the first 8 callbacks and then every 4096th call.
+    // All callback parameters are logged as raw values; none are dereferenced.
+    let probe_call = JP_COLLISION_PROBE_CALLS.fetch_add(1, Ordering::Relaxed);
+    if probe_call < 8 || probe_call % 4096 == 0 {
+        let player = unsafe { local_player(base) };
+        info!("mhxx-jp-1.5.1 collision-only probe: call={probe_call} check=0x{check:08X} attack=0x{attack:08X} monster=0x{monster:08X} point=0x{point:08X} body=0x{body:08X} attack_point=0x{attack_point:08X} part=0x{part:08X} shape=0x{shape:08X} local_player=0x{player:08X}");
+    }
     let mut contact = Contact {
         enabled: false,
         attack,
@@ -530,9 +661,31 @@ unsafe extern "C" fn collision(
 }
 
 unsafe extern "C" fn damage(monster: u32, slot: u32, raw: i32, mode: i32) -> i32 {
-    let original: unsafe extern "C" fn(u32, u32, i32, i32) -> i32 =
+    let entry_thread = thread_key();
+        let critical_state_at_entry = BINDINGS.with(|bindings| {
+            bindings
+                .0
+                .iter()
+                .find(|entry| entry.thread == entry_thread)
+                .map(|entry| unsafe { *entry.contact })
+        })
+        .filter(|contact| {
+            contact.enabled && contact.monster == monster && contact.slot == slot
+        })
+        .map_or(0, |contact| unsafe { read_u8(contact.attack + 0x54) });
+        let original: unsafe extern "C" fn(u32, u32, i32, i32) -> i32 =
         unsafe { mem::transmute(DAMAGE_ORIGINAL) };
     let result = unsafe { original(monster, slot, raw, mode) };
+    // Passive probe: log only raw inputs/output and whether this call happened
+    // synchronously inside the collision-hook scope. Do not inspect either object.
+    let probe_call = JP_DAMAGE_PROBE_CALLS.fetch_add(1, Ordering::Relaxed);
+    if probe_call < 24 || (raw > 0 && result > 0 && probe_call % 512 == 0) {
+        let thread = thread_key();
+        let collision_binding = BINDINGS.with(|bindings| {
+            bindings.0.iter().any(|entry| entry.thread == thread)
+        });
+        info!("mhxx-jp-1.5.1 damage-only probe: call={probe_call} monster=0x{monster:08X} slot={slot} raw={raw} mode={mode} result={result} collision_binding={collision_binding}");
+    }
     if raw > 0 && result > 0 && mode != 2 && slot < 8 && ENABLED.load(Ordering::Relaxed) {
         let thread = thread_key();
         let contact = BINDINGS.with(|bindings| {
@@ -548,7 +701,7 @@ unsafe extern "C" fn damage(monster: u32, slot: u32, raw: i32, mode: i32) -> i32
                     unsafe { damage_is_yellow(GAME_BASE.load(Ordering::Relaxed), contact) };
                 STATE.with(|state| {
                     if ENABLED.load(Ordering::Relaxed)
-                        && state.push(contact.epoch, contact.world, result, yellow)
+                        && state.push_with_critical(contact.epoch, contact.world, result, yellow, critical_state_at_entry)
                     {
                         TOTAL_EVENTS.fetch_add(1, Ordering::Relaxed);
                     }

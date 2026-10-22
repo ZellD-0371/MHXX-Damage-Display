@@ -67,12 +67,19 @@ for(const name of required) assert.ok(symbols.some(s=>s.defined&&s.name===name),
 const imports=symbols.filter(s=>!s.defined&&s.bind===1).map(s=>s.name);
 const logic=fs.readFileSync(path.join(root,'src/lib.rs'),'utf8');
 const data=fs.readFileSync(path.join(root,'src/data.rs'),'utf8');
-assert.ok(nro.includes(Buffer.from('savedata:/'+short+'.ini')),'save-root configuration path missing');
-assert.ok(nro.includes(fs.readFileSync(path.join(root,'conf',short+'.ini'))),'embedded default INI differs from conf template');
+// Diagnostic-only builds intentionally compile out load/save config paths and defaults.
+// Keep these checks for live builds, where the save-data INI must be embedded.
+const diagnosticOnly = /const\s+DIAGNOSTIC_ONLY\s*:\s*bool\s*=\s*true\s*;/.test(logic);
+if (!diagnosticOnly) {
+  assert.ok(nro.includes(Buffer.from('savedata:/'+short+'.ini')),'save-root configuration path missing');
+  assert.ok(nro.includes(fs.readFileSync(path.join(root,'conf',short+'.ini'))),'embedded default INI differs from conf template');
+}
 for(const prefix of ['app:/nativeNX/plugins/','healthcfg:/forge/plugins/','sdmc:/forge/plugins/']) {
   assert.ok(!nro.includes(Buffer.from(prefix+short+'.ini')),'obsolete configuration path');
 }
-const checks=['ARM32 soft-float','NRO segments match ELF','MOD0/dynamic/BSS','writable relocations; no TEXTREL','callbacks exported','embedded conf template; save-root INI'];
+const checks=['ARM32 soft-float','NRO segments match ELF','MOD0/dynamic/BSS','writable relocations; no TEXTREL','callbacks exported'];
+if (diagnosticOnly) checks.push('diagnostic-only build; save-root checks skipped');
+else checks.push('embedded conf template; save-root INI');
 if(health) {
   assert.ok(!imports.includes('forge_hook_create'),'health display must only read game state');
   const selection=logic.slice(logic.indexOf('unsafe fn selected_health('),logic.indexOf('unsafe fn loading_visible('));

@@ -31,6 +31,7 @@ use forge::log::prelude::warn;
 ${modulePath('src/data.rs','data')} use data::*;
 ${modulePath('shared/plugin_config.rs','plugin_config')}
 use plugin_config::DAMAGE as LOCATION;
+const DIAGNOSTIC_ONLY: bool = false; // host harness tests normal settings UI
 use sys::imgui::ImGuiInputTextFlags;
 ${mock}
 static MENU:plugin_config::Shared<plugin_config::Edit<Config>>=plugin_config::Shared::new(plugin_config::Edit::new(Config::DEFAULT));
